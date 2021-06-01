@@ -1,3 +1,11 @@
 {
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "C_Cpp.default.compilerArgs": ["-Wall"],
+    "C_Cpp.default.includePath": [
+        "Inc/",
+        "Drivers/STM32F4xx_HAL_Driver/Inc/",
+        "Drivers/CMSIS/Device/ST/STM32F4xx/Include/",
+        "Drivers/CMSIS/Core/Include/",
+        "Drivers/BSP/STM32F4xx-Nucleo/"
+    ],
 }

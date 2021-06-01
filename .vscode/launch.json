@@ -13,7 +13,7 @@
             "servertype": "openocd",
             "cwd": "${workspaceRoot}",
             "preLaunchTask": "Make",
-            "runToMain": true,
+            "runToEntryPoint": "main",
             "executable": "${workspaceRoot}/av",
             "gdbPath": "/usr/bin/gdb-multiarch",
             "device": "STM32F446RE",

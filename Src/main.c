@@ -1,81 +1,73 @@
-/**
-  ******************************************************************************
-  * @file    GPIO/GPIO_IOToggle/Src/main.c 
-  * @author  MCD Application Team
-  * @brief   This example describes how to configure and use GPIOs through 
-  *          the STM32F4xx HAL API.
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; Copyright (c) 2017 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
-  *
-  ******************************************************************************
-  */
 
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
-/** @addtogroup STM32F4xx_HAL_Examples
-  * @{
-  */
-
-/** @addtogroup GPIO_IOToggle
-  * @{
-  */ 
-
-/* Private typedef -----------------------------------------------------------*/
-/* Private define ------------------------------------------------------------*/
-/* Private macro -------------------------------------------------------------*/
-/* Private variables ---------------------------------------------------------*/
 static GPIO_InitTypeDef  GPIO_InitStruct;
+static TIM_HandleTypeDef TIM_HandleStruct;
+static TIM_OC_InitTypeDef TIM_OC_InitStruct;
 
-/* Private function prototypes -----------------------------------------------*/
- void SystemClock_Config(void);
+void SystemClock_Config(void);
 static void Error_Handler(void);
 
-/* Private functions ---------------------------------------------------------*/
+void TIM2_IRQHandler() {
+  HAL_TIM_IRQHandler(&TIM_HandleStruct);
+}
 
-/**
-  * @brief  Main program
-  * @param  None
-  * @retval None
-  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+}
+
+void assert_ok(HAL_StatusTypeDef status) {
+  if (status != HAL_OK)
+    Error_Handler();
+}
+
 int main(void)
 {
-  /* STM32F4xx HAL library initialization:
-       - Configure the Flash prefetch, instruction and Data caches
-       - Configure the Systick to generate an interrupt each 1 msec
-       - Set NVIC Group Priority to 4
-       - Global MSP (MCU Support Package) initialization
-     */
   HAL_Init();
-  
-  /* Configure the system clock to 180 MHz */
   SystemClock_Config();
-    
-  /*##-1- Enable GPIOA Clock (to be able to program the configuration registers) */
+
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  
-  /*##-2- Configure PA05 IO in output push-pull mode to drive external LED ###*/  
   GPIO_InitStruct.Pin = GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FAST;
+  GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct); 
-   
-  /*##-3- Toggle PA05 IO in an infinite loop #################################*/  
+  // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+
+  __HAL_RCC_TIM2_CLK_ENABLE();
+
+  HAL_NVIC_SetPriority(TIM2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(TIM2_IRQn);
+
+  TIM_HandleStruct.Init.CounterMode = TIM_COUNTERMODE_UP;
+  TIM_HandleStruct.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  TIM_HandleStruct.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  TIM_HandleStruct.Init.Period = 100;
+  TIM_HandleStruct.Init.Prescaler = 4500;
+  TIM_HandleStruct.Instance = TIM2;
+
+  TIM_OC_InitStruct.OCFastMode = TIM_OCFAST_ENABLE;
+  TIM_OC_InitStruct.OCIdleState = TIM_OCIDLESTATE_RESET;
+  TIM_OC_InitStruct.OCMode = TIM_OCMODE_PWM1;
+  TIM_OC_InitStruct.Pulse = 50;
+  TIM_OC_InitStruct.OCPolarity = TIM_OCPOLARITY_HIGH;
+
+  assert_ok(HAL_TIM_PWM_Init(&TIM_HandleStruct));
+  assert_ok(HAL_TIM_PWM_ConfigChannel(&TIM_HandleStruct, &TIM_OC_InitStruct, TIM_CHANNEL_1));
+  assert_ok(HAL_TIM_PWM_Start(&TIM_HandleStruct, TIM_CHANNEL_1));
+
+  int delta = 1;
   while (1)
   {
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-    
-    /* Insert a 100ms delay */
-    HAL_Delay(100);
+    if (TIM2->CCR1 == 100)
+      delta = -1;
+    else if (TIM2->CCR1 == 0)
+      delta = 1;
+
+    TIM2->CCR1 = TIM2->CCR1 + delta;
+    HAL_Delay(10);
   }
 }
 
@@ -142,7 +134,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;  
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;  
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;  
   if(HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
@@ -182,13 +174,3 @@ void assert_failed(uint8_t* file, uint32_t line)
   }
 }
 #endif
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
