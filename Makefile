@@ -36,26 +36,8 @@ BUILD_DIR = build
 ######################################
 # C sources
 C_SOURCES =  \
-Core/Src/main.c \
-Core/Src/stm32f4xx_it.c \
-Core/Src/stm32f4xx_hal_msp.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c \
-Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c \
-Core/Src/system_stm32f4xx.c  
+$(shell echo Core/Src/*) \
+$(shell echo Drivers/STM32F4xx_HAL_Driver/Src/*)
 
 # ASM sources
 ASM_SOURCES =  \
@@ -145,7 +127,7 @@ LIBDIR =
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 # default action: build all
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+all: $(BUILD_DIR)/$(TARGET).elf # $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
 
 #######################################
