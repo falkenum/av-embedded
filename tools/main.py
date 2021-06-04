@@ -16,26 +16,23 @@ p = serial.Serial('/dev/ttyACM0', 115200)
 M = 1024
 # p.write(int(255).to_bytes(1, 'big', True))
 
-xint = np.multiply(x[:M], (1 << 15)) + (1 << 15)
-print(x[0])
-for i in range(len(xint)):
-    sample = int(xint[i])
-    data = sample.to_bytes(2, 'big')
+for i in range(M):
+    data = struct.pack('<f', x[:M][i])
     p.write(data)
-    p.write(b',')
 
 X2 = np.zeros(M//2)
 
 for i in range(M//2):
     data = p.read(4)
-    comma = p.read()
-    # unpacked = struct.unpack('<f', data)
     X2[i] = struct.unpack('<f', data)[0]
 
 
-# w = np.hamming(M)
+w = np.zeros(M)
+
+for i in range(M):
+    w[i] = 25/46+(1-25/46)*np.cos(2*np.pi*i/M)
 # xw = x[:M]*w
-X1 = 20*np.log10(abs(fft(x, M)))
+X1 = 20*np.log10(abs(fft(x[:M]*w, M)))
 plt.plot(X1)
 plt.plot(X2)
 plt.show()

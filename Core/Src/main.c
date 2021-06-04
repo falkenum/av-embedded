@@ -22,9 +22,7 @@ int main(void)
   // ADC1_Init();
   UART_Init();
 
-  // HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  char rx_buf[100] = {0};
-  char tx_buf[100] = {0};
+  float32_t uart_buf[FFT_SIZE];
   float32_t sample_buf[FFT_SIZE];
   float32_t fft_out[FFT_SIZE];
 
@@ -33,29 +31,34 @@ int main(void)
 
   while (1)
   {
-    // HAL_ADC_Start(&hadc1);
-    // __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, HAL_ADC_GetValue(&hadc1));
 
-    for (uint32_t i = 0; i < FFT_SIZE; i++) {
-      HAL_UART_Receive(&huart2, (uint8_t*) rx_buf, 3, 0xFFFFFFFF);
-      uint16_t sample_as_uint = ((uint16_t)(rx_buf[0]) << 8) | rx_buf[1];
-      sample_buf[i] = (sample_as_uint - INT16_MAX) / (float32_t) INT16_MAX;
+    HAL_UART_Receive(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE, 0xFFFFFFFF);
+    for (uint32_t i = FFT_SIZE/2; i < FFT_SIZE; i++) {
+      uart_buf[i] = 0;
+    }
+
+    uint32_t start = HAL_GetTick();
+    for (uint32_t i = 0; i < FFT_SIZE; i += 1) {
+      sample_buf[i] = uart_buf[i];
+
+      // applying window
+      float32_t a0 = 25/46;
+      sample_buf[i] = (a0 - (1-a0)*arm_cos_f32(2*PI*i/FFT_SIZE)) * sample_buf[i];
     }
 
     arm_rfft_fast_f32(&fft_struct, sample_buf, fft_out, 0);
 
     for (uint32_t i = 0; i < FFT_SIZE/2; i++) {
       float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
-      float32_t sample_temp, sample_mag, sample_mag_db;
+      float32_t sample_temp, sample_mag_db;
       arm_power_f32(sample_raw, 2, &sample_temp);
-      static const float32_t eps = 0.000001;
-      sample_mag_db = 10*log10f((float)(sample_temp + eps));
-      *((float32_t*) tx_buf) = sample_mag_db;
+      sample_mag_db = 10*log10f((float) sample_temp);
+      uart_buf[i] = sample_mag_db;
 
-      tx_buf[4] = ',';
-      HAL_UART_Transmit(&huart2, (uint8_t*) tx_buf, 5, 0xFFFFFFFF);
     }
-    HAL_Delay(1);
+    uint32_t elapsed = HAL_GetTick() - start;
+    HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE/2, 0xFFFFFFFF);
+    HAL_Delay(elapsed);
   }
 }
 
