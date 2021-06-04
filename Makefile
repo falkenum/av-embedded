@@ -86,6 +86,7 @@ AS_DEFS =
 # C defines
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
+-DARM_MATH_CM4 \
 -DSTM32F446xx
 
 
@@ -94,11 +95,12 @@ AS_INCLUDES =
 
 # C includes
 C_INCLUDES =  \
--ICore/Inc \
+-IDrivers/CMSIS/Device/ST/STM32F4xx/Include \
+-IDrivers/CMSIS/Include \
+-IDrivers/CMSIS/DSP/Include \
 -IDrivers/STM32F4xx_HAL_Driver/Inc \
 -IDrivers/STM32F4xx_HAL_Driver/Inc/Legacy \
--IDrivers/CMSIS/Device/ST/STM32F4xx/Include \
--IDrivers/CMSIS/Include
+-ICore/Inc
 
 
 # compile gcc flags
@@ -123,7 +125,7 @@ LDSCRIPT = STM32F446RETx_FLASH.ld
 
 # libraries
 LIBS = -lc -lm -lnosys 
-LIBDIR = 
+LIBDIR = Drivers/CMSIS/Lib/GCC/libarm_cortexM4lf_math.a
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 # default action: build all

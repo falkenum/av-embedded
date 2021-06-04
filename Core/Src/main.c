@@ -1,5 +1,6 @@
 
 #include "main.h"
+#define FFT_SIZE 1024
 
 TIM_HandleTypeDef htim2 = {0};
 UART_HandleTypeDef huart2 = {0};
@@ -9,6 +10,7 @@ void SystemClock_Config(void);
 static void GPIO_Init(void);
 static void TIM2_Init(void);
 static void ADC1_Init(void);
+static void UART_Init(void);
 
 int main(void)
 {
@@ -16,16 +18,44 @@ int main(void)
   SystemClock_Config();
 
   GPIO_Init();
-  TIM2_Init();
-  ADC1_Init();
+  // TIM2_Init();
+  // ADC1_Init();
+  UART_Init();
 
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  // HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  char rx_buf[100] = {0};
+  char tx_buf[100] = {0};
+  float32_t sample_buf[FFT_SIZE];
+  float32_t fft_out[FFT_SIZE];
+
+  arm_rfft_fast_instance_f32 fft_struct;
+  arm_rfft_fast_init_f32(&fft_struct, FFT_SIZE);
+
   while (1)
   {
-    HAL_ADC_Start(&hadc1);
-    TIM2->CCR1 = ADC1->DR;
+    // HAL_ADC_Start(&hadc1);
+    // __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, HAL_ADC_GetValue(&hadc1));
 
-    HAL_Delay(10);
+    for (uint32_t i = 0; i < FFT_SIZE; i++) {
+      HAL_UART_Receive(&huart2, (uint8_t*) rx_buf, 3, 0xFFFFFFFF);
+      uint16_t sample_as_uint = ((uint16_t)(rx_buf[0]) << 8) | rx_buf[1];
+      sample_buf[i] = (sample_as_uint - INT16_MAX) / (float32_t) INT16_MAX;
+    }
+
+    arm_rfft_fast_f32(&fft_struct, sample_buf, fft_out, 0);
+
+    for (uint32_t i = 0; i < FFT_SIZE/2; i++) {
+      float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
+      float32_t sample_temp, sample_mag, sample_mag_db;
+      arm_power_f32(sample_raw, 2, &sample_temp);
+      static const float32_t eps = 0.000001;
+      sample_mag_db = 10*log10f((float)(sample_temp + eps));
+      *((float32_t*) tx_buf) = sample_mag_db;
+
+      tx_buf[4] = ',';
+      HAL_UART_Transmit(&huart2, (uint8_t*) tx_buf, 5, 0xFFFFFFFF);
+    }
+    HAL_Delay(1);
   }
 }
 
@@ -118,6 +148,14 @@ static void GPIO_Init(void)
   GPIO_InitStruct.Mode = MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // UART pins
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
 
 void Error_Handler(void)
@@ -136,4 +174,23 @@ static void ADC1_Init(void) {
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   HAL_ADC_Init(&hadc1);
+}
+
+static void UART_Init(void)
+{
+  __HAL_RCC_USART2_CLK_ENABLE();
+
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
 }
