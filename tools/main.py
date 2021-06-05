@@ -11,8 +11,8 @@ from scipy.signal import hamming
 from scipy.fftpack import fft
 import math
 
-(fs, x) = UF.wavread('../sounds/piano.wav')
-p = serial.Serial('/dev/ttyACM0', 115200)
+(fs, x) = UF.wavread('../sounds/sine-1000.wav')
+p = serial.Serial('/dev/ttyACM1', 115200)
 M = 1024
 # p.write(int(255).to_bytes(1, 'big', True))
 
@@ -24,14 +24,13 @@ X2 = np.zeros(M//2)
 
 for i in range(M//2):
     data = p.read(4)
-    X2[i] = struct.unpack('<f', data)[0]
+    X2[i] = struct.unpack('>f', data)[0]
 
 
 w = np.zeros(M)
 
 for i in range(M):
     w[i] = 25/46+(1-25/46)*np.cos(2*np.pi*i/M)
-# xw = x[:M]*w
 X1 = 20*np.log10(abs(fft(x[:M]*w, M)))
 plt.plot(X1)
 plt.plot(X2)
