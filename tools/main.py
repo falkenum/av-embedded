@@ -16,9 +16,9 @@ p = serial.Serial('/dev/ttyACM0', 115200)
 M = 1024
 # p.write(int(255).to_bytes(1, 'big', True))
 
-for i in range(M):
-    data = struct.pack('<f', x[:M][i])
-    p.write(data)
+# for i in range(M):
+#     data = struct.pack('<f', x[:M][i])
+#     p.write(data)
 
 X2 = np.zeros(M//2)
 
