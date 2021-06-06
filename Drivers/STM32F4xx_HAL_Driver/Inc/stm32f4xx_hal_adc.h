@@ -592,6 +592,7 @@ HAL_StatusTypeDef HAL_ADC_Stop_IT(ADC_HandleTypeDef* hadc);
 
 void HAL_ADC_IRQHandler(ADC_HandleTypeDef* hadc);
 
+HAL_StatusTypeDef HAL_ADC_Start_DoubleBuffer_DMA(ADC_HandleTypeDef* hadc, uint32_t* pData1, uint32_t* pData2, uint32_t Length);
 HAL_StatusTypeDef HAL_ADC_Start_DMA(ADC_HandleTypeDef* hadc, uint32_t* pData, uint32_t Length);
 HAL_StatusTypeDef HAL_ADC_Stop_DMA(ADC_HandleTypeDef* hadc);
 

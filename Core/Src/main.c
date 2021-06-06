@@ -4,7 +4,7 @@
 
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
-TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim2, htim3;
 UART_HandleTypeDef huart2;
 
 enum {
@@ -18,6 +18,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
 
 void DMA2_Stream0_IRQHandler(void) {
@@ -49,6 +50,7 @@ int main(void) {
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
+  MX_TIM3_Init();
   MX_USART2_UART_Init();
 
   uint32_t adc_data[2][FFT_SIZE] = {0};
@@ -57,6 +59,7 @@ int main(void) {
   float32_t uart_buf[FFT_SIZE/2];
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
   HAL_ADC_Start_DoubleBuffer_DMA(&hadc1, adc_data[0], adc_data[1], FFT_SIZE);
 
   arm_rfft_fast_instance_f32 fft_struct;
@@ -68,7 +71,6 @@ int main(void) {
       // wait
     }
 
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
     uint8_t buff_num = (fft_status == READY0) ? 0 : 1;
 
     for (uint32_t i = 0; i < FFT_SIZE; i += 1) {
@@ -82,7 +84,11 @@ int main(void) {
 
     arm_rfft_fast_f32(&fft_struct, sample_buf, fft_out, 0);
 
-    float32_t max = 0.0, min = 0.0;
+    float32_t max = 0.0;
+
+    // suppress DC component
+    fft_out[0] = __FLT_EPSILON__;
+    fft_out[1] = __FLT_EPSILON__;
 
     for (uint32_t i = 0; i < FFT_SIZE/2; i++) {
       float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
@@ -93,13 +99,13 @@ int main(void) {
 
       if (uart_buf[i] > max)
         max = uart_buf[i];
-      if (uart_buf[i] < min)
-        min = uart_buf[i];
 
     }
+
+    float32_t max_db = 80;
+    htim3.Instance->CCR2 = (uint32_t) ((max / max_db) * 1000.0);
     // HAL_Delay((max + min) / __FLT_MAX__);
-    HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE/2, 0xFFFFFFFF);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
+    // HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE/2, 0xFFFFFFFF);
 
     // HAL_Delay(1);
 
@@ -264,6 +270,52 @@ static void MX_TIM2_Init(void)
 
 }
 
+static void MX_TIM3_Init(void)
+{
+
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 2;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 1000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_OC2REF;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  HAL_TIM_MspPostInit(&htim3);
+
+}
+
 /**
   * @brief USART2 Initialization Function
   * @param None
@@ -345,11 +397,11 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 }

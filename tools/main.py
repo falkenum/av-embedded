@@ -11,7 +11,7 @@ from scipy.signal import hamming
 from scipy.fftpack import fft
 import math
 
-(fs, x) = UF.wavread('../sounds/sine-1000.wav')
+(fs, x) = UF.wavread('../sounds/flute-A4.wav')
 p = serial.Serial('/dev/ttyACM1', 115200)
 M = 1024
 # p.write(int(255).to_bytes(1, 'big', True))
@@ -22,10 +22,20 @@ M = 1024
 
 X2 = np.zeros(M//2)
 
-for i in range(M//2):
-    data = p.read(4)
-    X2[i] = struct.unpack('>f', data)[0]
+max = 0.0
+min = 0.0
 
+data = p.read(4*M//2)
+
+for i in range(M//2):
+    X2[i] = struct.unpack('<f', data[i*4:(i+1)*4])[0]
+    if X2[i] > max:
+        max = X2[i]
+    if X2[i] < min:
+        min = X2[i]
+
+print(max)
+print(min)
 
 w = np.zeros(M)
 
