@@ -1,12 +1,19 @@
 
 #include "main.h"
 #define FFT_SIZE 1024
-#define ADC_FIFO_CHUNK_SIZE 512
-#define ADC_FIFO_NUM_CHUNKS 8
+#define ADC_FIFO_CHUNK_SIZE 256
+#define ADC_FIFO_NUM_CHUNKS (FFT_SIZE/ADC_FIFO_CHUNK_SIZE)
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
 #define MAX_DB 80
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
+#define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
+#define MIN_FREQ 80
+#define MAX_FREQ 8000
+#define LOWBAND_MIN 370
+#define LOWBAND_MAX 510
+#define HIGHBAND_MIN 4000
+#define HIGHBAND_MAX MAX_FREQ
 
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
@@ -67,6 +74,8 @@ int main(void) {
   MX_TIM3_Init();
   MX_USART2_UART_Init();
 
+  __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
+
   ADC_FIFO_Init();
 
   // uint16_t adc_data[2][FFT_SIZE] = {0};
@@ -94,7 +103,7 @@ int main(void) {
     for (uint32_t i = 0; i < FFT_SIZE; i += 1) {
       size_t sample_idx = (adc_fifo.head_chunk*ADC_FIFO_CHUNK_SIZE + i) % ADC_FIFO_NUM_SAMPLES;
 
-      fft_in[i] = ((float32_t) adc_fifo.data.samples[sample_idx] - (2048)) / (1 << 12);
+      fft_in[i] = ((float32_t) adc_fifo.data.samples[sample_idx] - 2048) / 4096;
 
       // applying window
       float32_t a0 = 25/46;
@@ -104,25 +113,66 @@ int main(void) {
     arm_rfft_fast_f32(&fft_struct, fft_in, fft_out, 0);
 
     // suppress DC component
-    fft_out[0] = 0.0;
-    fft_out[1] = 0.0;
-    fft_out[2] = 0.0;
-    fft_out[3] = 0.0;
+    for (size_t i = 0; (i>>1)*FFT_BIN_BANDWIDTH < MIN_FREQ; i+=2) {
+      fft_out[i] = 0.0;
+      fft_out[i+1] = 0.0;
+    }
 
-    float32_t max = 0.0;
+    float32_t max_sample_mag_db_for_frame = 0.0;
+    float32_t highband_energy_factor = 0.0;
+
     for (uint32_t i = 0; i < FFT_SIZE/2; i++) {
       float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
       float32_t sample_mag_sq;
       arm_power_f32(sample_raw, 2, &sample_mag_sq);
+
       sample_mag_db[i] = 10*log10f((float) sample_mag_sq + __FLT_EPSILON__);
 
-      if (sample_mag_db[i] > max) {
-        max = sample_mag_db[i];
+      if (sample_mag_db[i] > max_sample_mag_db_for_frame) {
+        max_sample_mag_db_for_frame = sample_mag_db[i];
+
+      float32_t current_freq = i*FFT_BIN_BANDWIDTH;
+      if (current_freq < HIGHBAND_MAX && current_freq > HIGHBAND_MIN) {
+        // scale by frequency
+        highband_energy_factor += sample_mag_sq * i;
+      }
+
       }
     }
 
+    static float32_t last_hbef = 0.0, max_hbef_diff_db = __FLT_EPSILON__, max_sample_mag_db_overall = __FLT_EPSILON__;
+
+    float32_t hbef_diff = highband_energy_factor - last_hbef;
+
+    float32_t hbef_diff_rect = hbef_diff > 0 ? hbef_diff : 0;
+    float32_t hbef_diff_db = 0;
+
+    hbef_diff_db = 10*log10f((float) hbef_diff_rect + __FLT_EPSILON__);
+
+    if (hbef_diff_db < 10)
+      hbef_diff_db = 0;
+
+    if (hbef_diff_db > max_hbef_diff_db)
+      max_hbef_diff_db = hbef_diff_db;
+
+    if (max_sample_mag_db_for_frame > max_sample_mag_db_overall)
+      max_sample_mag_db_overall = max_sample_mag_db_for_frame;
+
+    last_hbef = highband_energy_factor;
+
+    volatile static size_t sample_mag_db_used_cnt = 0, total_cnt = 0;
+
+    float32_t max_pwm_ratio = hbef_diff_db / max_hbef_diff_db;
+    if ((max_sample_mag_db_for_frame / max_sample_mag_db_overall) > max_pwm_ratio) {
+      max_pwm_ratio = max_sample_mag_db_for_frame/ MAX_DB;
+      sample_mag_db_used_cnt += 1;
+    }
+    total_cnt += 1;
+
+    htim3.Instance->CCR2 = (uint32_t) (max_pwm_ratio * htim3.Instance->ARR);
+
     // update led pwm
-    htim3.Instance->CCR2 = (uint32_t) ((max / MAX_DB) * htim3.Instance->ARR);
+    // htim3.Instance->CCR2 = (uint32_t) ((max / MAX_DB) * htim3.Instance->ARR);
 
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
     // HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE/2, 0xFFFFFFFF);
@@ -140,6 +190,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
+  __HAL_RCC_SYSCFG_CLK_ENABLE();
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
   /** Initializes the RCC Oscillators according to the specified parameters
@@ -187,6 +238,7 @@ void SystemClock_Config(void)
   */
 static void MX_ADC1_Init(void)
 {
+  __HAL_RCC_ADC1_CLK_ENABLE();
 
   /* USER CODE BEGIN ADC1_Init 0 */
 
@@ -233,10 +285,7 @@ static void MX_ADC1_Init(void)
   */
 static void MX_TIM2_Init(void)
 {
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
+  __HAL_RCC_TIM2_CLK_ENABLE();
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
@@ -281,13 +330,13 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
 
 }
 
 static void MX_TIM3_Init(void)
 {
 
+  __HAL_RCC_TIM3_CLK_ENABLE();
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
@@ -327,7 +376,6 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
 
-  HAL_TIM_MspPostInit(&htim3);
 
 }
 
@@ -339,6 +387,11 @@ static void MX_TIM3_Init(void)
 static void MX_USART2_UART_Init(void)
 {
 
+    __HAL_RCC_USART2_CLK_ENABLE();
+    /**USART2 GPIO Configuration
+    PA2     ------> USART2_TX
+    PA3     ------> USART2_RX
+    */
   /* USER CODE BEGIN USART2_Init 0 */
 
   /* USER CODE END USART2_Init 0 */
@@ -378,6 +431,22 @@ static void MX_DMA_Init(void)
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
+    /* ADC1 DMA Init */
+    /* ADC1 Init */
+    hdma_adc1.Instance = DMA2_Stream0;
+    hdma_adc1.Init.Channel = DMA_CHANNEL_0;
+    hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    hdma_adc1.Init.Mode = DMA_CIRCULAR;
+    hdma_adc1.Init.Priority = DMA_PRIORITY_VERY_HIGH;
+    hdma_adc1.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
+    {
+      Error_Handler();
+    }
 }
 
 /**
@@ -394,15 +463,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  /**ADC1 GPIO Configuration
+  PA0-WKUP     ------> ADC1_IN0
+  */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // /*Configure GPIO pin Output Level */
+  // HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
@@ -416,6 +486,20 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
 
