@@ -1,24 +1,24 @@
 
 #include "main.h"
+#define WINDOW_SIZE 512
 #define FFT_SIZE 1024
 #define ADC_FIFO_CHUNK_SIZE 256
-#define ADC_FIFO_NUM_CHUNKS (FFT_SIZE/ADC_FIFO_CHUNK_SIZE)
+#define ADC_FIFO_NUM_CHUNKS (WINDOW_SIZE/ADC_FIFO_CHUNK_SIZE)
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
-#define MAX_DB 80
+#define MAX_DB 60
+#define MIN_DB 0
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
 #define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
 #define MIN_FREQ 80
-#define MAX_FREQ 8000
-#define LOWBAND_MIN 370
-#define LOWBAND_MAX 510
-#define HIGHBAND_MIN 4000
-#define HIGHBAND_MAX MAX_FREQ
+#define MAX_FREQ 10000
+#define NUM_LEDS 2
 
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 TIM_HandleTypeDef htim2, htim3;
 UART_HandleTypeDef huart2;
+I2C_HandleTypeDef hi2c1;
 
 typedef uint16_t adc_sample_t;
 typedef union {
@@ -40,6 +40,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2C1_Init(void);
 
 static void ADC_FIFO_Init(void) {
   adc_fifo.head_chunk = 0;
@@ -73,17 +74,18 @@ int main(void) {
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_I2C1_Init();
 
   __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
 
   ADC_FIFO_Init();
 
-  // uint16_t adc_data[2][FFT_SIZE] = {0};
   float32_t fft_in[FFT_SIZE];
   float32_t fft_out[FFT_SIZE];
   float32_t sample_mag_db[FFT_SIZE/2];
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
   HAL_ADC_Start_DoubleBuffer_DMA(&hadc1, (uint32_t*) adc_fifo.data.chunks[0], (uint32_t*) adc_fifo.data.chunks[0], ADC_FIFO_CHUNK_SIZE);
 
@@ -98,16 +100,21 @@ int main(void) {
     while (last_head_chunk == adc_fifo.head_chunk);
     last_head_chunk = adc_fifo.head_chunk;
 
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
+    // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
 
-    for (uint32_t i = 0; i < FFT_SIZE; i += 1) {
+    float32_t a0 = 25/46;
+    for (uint32_t i = 0; i < ADC_FIFO_NUM_SAMPLES; i += 1) {
       size_t sample_idx = (adc_fifo.head_chunk*ADC_FIFO_CHUNK_SIZE + i) % ADC_FIFO_NUM_SAMPLES;
 
       fft_in[i] = ((float32_t) adc_fifo.data.samples[sample_idx] - 2048) / 4096;
 
       // applying window
-      float32_t a0 = 25/46;
       fft_in[i] = (a0 - (1-a0)*arm_cos_f32(2*PI*i/FFT_SIZE)) * fft_in[i];
+    }
+
+    // zero padding
+    for (uint32_t i = ADC_FIFO_NUM_SAMPLES; i < FFT_SIZE; i += 1) {
+      fft_in[i] = 0.0;
     }
 
     arm_rfft_fast_f32(&fft_struct, fft_in, fft_out, 0);
@@ -118,63 +125,63 @@ int main(void) {
       fft_out[i+1] = 0.0;
     }
 
-    float32_t max_sample_mag_db_for_frame = 0.0;
-    float32_t highband_energy_factor = 0.0;
+    float32_t max_sample_mag_db_for_frame[NUM_LEDS];
+    float32_t highband_energy_factor[NUM_LEDS];
+    static float32_t last_hbef[NUM_LEDS];
 
-    for (uint32_t i = 0; i < FFT_SIZE/2; i++) {
+    for (size_t i = 0; i < NUM_LEDS; i++) {
+      max_sample_mag_db_for_frame[i] = MIN_DB;
+      highband_energy_factor[i] = 0.0;
+      last_hbef[i] = 0.0;
+    }
+
+    uint32_t max_bin = MAX_FREQ / FFT_BIN_BANDWIDTH;
+    uint32_t min_bin = MIN_FREQ / FFT_BIN_BANDWIDTH;
+
+    for (uint32_t i = min_bin; i < max_bin; i++) {
       float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
       float32_t sample_mag_sq;
       arm_power_f32(sample_raw, 2, &sample_mag_sq);
 
       sample_mag_db[i] = 10*log10f((float) sample_mag_sq + __FLT_EPSILON__);
 
-      if (sample_mag_db[i] > max_sample_mag_db_for_frame) {
-        max_sample_mag_db_for_frame = sample_mag_db[i];
+      size_t led_num = NUM_LEDS * (i - min_bin) / (float) (max_bin - min_bin);
 
-      float32_t current_freq = i*FFT_BIN_BANDWIDTH;
-      if (current_freq < HIGHBAND_MAX && current_freq > HIGHBAND_MIN) {
-        // scale by frequency
-        highband_energy_factor += sample_mag_sq * i;
-      }
+      if (sample_mag_db[i] > max_sample_mag_db_for_frame[led_num])
+        max_sample_mag_db_for_frame[led_num] = sample_mag_db[i];
 
-      }
+      highband_energy_factor[led_num] += sample_mag_sq * i;
     }
 
-    static float32_t last_hbef = 0.0, max_hbef_diff_db = __FLT_EPSILON__, max_sample_mag_db_overall = __FLT_EPSILON__;
+    const float32_t max_hbef_diff_db = 50.0, max_sample_mag_db_overall = 40.0;
+    uint32_t* led_pulse_ptrs[NUM_LEDS] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2};
 
-    float32_t hbef_diff = highband_energy_factor - last_hbef;
+    for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
+      float32_t hbef_diff = highband_energy_factor[led_num] - last_hbef[led_num];
+      float32_t hbef_diff_rect = hbef_diff > 0 ? hbef_diff : 0;
+      float32_t hbef_diff_db = 0;
 
-    float32_t hbef_diff_rect = hbef_diff > 0 ? hbef_diff : 0;
-    float32_t hbef_diff_db = 0;
+      hbef_diff_db = 10*log10f((float) hbef_diff_rect + __FLT_EPSILON__);
 
-    hbef_diff_db = 10*log10f((float) hbef_diff_rect + __FLT_EPSILON__);
+      if (hbef_diff_db < 20)
+        hbef_diff_db = 0;
 
-    if (hbef_diff_db < 10)
-      hbef_diff_db = 0;
+      if (max_sample_mag_db_for_frame[led_num] < 0)
+        max_sample_mag_db_for_frame[led_num] = 0;
 
-    if (hbef_diff_db > max_hbef_diff_db)
-      max_hbef_diff_db = hbef_diff_db;
+      last_hbef[led_num] = highband_energy_factor[led_num];
 
-    if (max_sample_mag_db_for_frame > max_sample_mag_db_overall)
-      max_sample_mag_db_overall = max_sample_mag_db_for_frame;
+      // volatile static size_t sample_mag_db_used_cnt = 0, total_cnt = 0;
 
-    last_hbef = highband_energy_factor;
+      float32_t hbef_pwm_ratio = hbef_diff_db / max_hbef_diff_db;
+      float32_t sample_db_pwm_ratio = max_sample_mag_db_for_frame[led_num] / max_sample_mag_db_overall;
+      float32_t max_pwm_ratio = hbef_pwm_ratio > sample_db_pwm_ratio ? hbef_pwm_ratio : sample_db_pwm_ratio;
 
-    volatile static size_t sample_mag_db_used_cnt = 0, total_cnt = 0;
-
-    float32_t max_pwm_ratio = hbef_diff_db / max_hbef_diff_db;
-    if ((max_sample_mag_db_for_frame / max_sample_mag_db_overall) > max_pwm_ratio) {
-      max_pwm_ratio = max_sample_mag_db_for_frame/ MAX_DB;
-      sample_mag_db_used_cnt += 1;
+      // update led pwm
+      *(led_pulse_ptrs[led_num]) = (uint32_t) (max_pwm_ratio * htim3.Instance->ARR);
     }
-    total_cnt += 1;
 
-    htim3.Instance->CCR2 = (uint32_t) (max_pwm_ratio * htim3.Instance->ARR);
-
-    // update led pwm
-    // htim3.Instance->CCR2 = (uint32_t) ((max / MAX_DB) * htim3.Instance->ARR);
-
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
+    // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
     // HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, sizeof(float32_t)*FFT_SIZE/2, 0xFFFFFFFF);
   }
 }
@@ -375,6 +382,10 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
 
 }
@@ -475,20 +486,13 @@ static void MX_GPIO_Init(void)
   // HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -501,6 +505,33 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+}
+
+static void MX_I2C1_Init(void)
+{
+  __HAL_RCC_I2C1_CLK_ENABLE();
+
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /* USER CODE BEGIN 4 */

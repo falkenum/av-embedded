@@ -37,7 +37,8 @@ BUILD_DIR = build
 # C sources
 C_SOURCES =  \
 $(shell echo Core/Src/*) \
-$(shell echo Drivers/STM32F4xx_HAL_Driver/Src/*)
+$(shell echo Drivers/STM32F4xx_HAL_Driver/Src/*) \
+$(shell echo Drivers/ssd1306/Source/*)
 
 # ASM sources
 ASM_SOURCES =  \
@@ -99,6 +100,7 @@ C_INCLUDES =  \
 -IDrivers/CMSIS/Include \
 -IDrivers/CMSIS/DSP/Include \
 -IDrivers/STM32F4xx_HAL_Driver/Inc \
+-IDrivers/ssd1306/Include \
 -IDrivers/STM32F4xx_HAL_Driver/Inc/Legacy \
 -ICore/Inc
 
