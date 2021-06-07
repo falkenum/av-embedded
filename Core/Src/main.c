@@ -6,13 +6,16 @@
 #define ADC_FIFO_NUM_CHUNKS (WINDOW_SIZE/ADC_FIFO_CHUNK_SIZE)
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
 #define MAX_DB 60
-#define MIN_DB 0
+#define MIN_DB (-10)
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
 #define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
 #define MIN_FREQ 80
 #define MAX_FREQ 10000
 #define NUM_LEDS 2
+#define MAX_BIN ((size_t) (MAX_FREQ / FFT_BIN_BANDWIDTH))
+#define MIN_BIN ((size_t) (MIN_FREQ / FFT_BIN_BANDWIDTH))
+
 
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
@@ -82,7 +85,8 @@ int main(void) {
 
   float32_t fft_in[FFT_SIZE];
   float32_t fft_out[FFT_SIZE];
-  float32_t sample_mag_db[FFT_SIZE/2];
+  // float32_t sample_mag[MAX_BIN-MIN_BIN];
+  float32_t sample_mag_db[MAX_BIN-MIN_BIN];
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
@@ -102,7 +106,7 @@ int main(void) {
 
     // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
 
-    float32_t a0 = 25/46;
+    float32_t a0 = 25.0/46.0;
     for (uint32_t i = 0; i < ADC_FIFO_NUM_SAMPLES; i += 1) {
       size_t sample_idx = (adc_fifo.head_chunk*ADC_FIFO_CHUNK_SIZE + i) % ADC_FIFO_NUM_SAMPLES;
 
@@ -120,41 +124,39 @@ int main(void) {
     arm_rfft_fast_f32(&fft_struct, fft_in, fft_out, 0);
 
     // suppress DC component
-    for (size_t i = 0; (i>>1)*FFT_BIN_BANDWIDTH < MIN_FREQ; i+=2) {
+    for (size_t i = 0; (i/2)*FFT_BIN_BANDWIDTH < MIN_FREQ; i+=2) {
       fft_out[i] = 0.0;
       fft_out[i+1] = 0.0;
     }
 
-    float32_t max_sample_mag_db_for_frame[NUM_LEDS];
+    size_t dominant_bin_for_frame[NUM_LEDS];
     float32_t highband_energy_factor[NUM_LEDS];
     static float32_t last_hbef[NUM_LEDS];
 
     for (size_t i = 0; i < NUM_LEDS; i++) {
-      max_sample_mag_db_for_frame[i] = MIN_DB;
+      dominant_bin_for_frame[i] = MIN_BIN;
       highband_energy_factor[i] = 0.0;
       last_hbef[i] = 0.0;
     }
 
-    uint32_t max_bin = MAX_FREQ / FFT_BIN_BANDWIDTH;
-    uint32_t min_bin = MIN_FREQ / FFT_BIN_BANDWIDTH;
-
-    for (uint32_t i = min_bin; i < max_bin; i++) {
+    for (uint32_t i = MIN_BIN; i < MAX_BIN; i++) {
       float32_t sample_raw[2] = {fft_out[i*2], fft_out[i*2+1]};
       float32_t sample_mag_sq;
       arm_power_f32(sample_raw, 2, &sample_mag_sq);
 
+      // sample_mag[i] = sqrtf((float) sample_mag_sq + __FLT_EPSILON__);
       sample_mag_db[i] = 10*log10f((float) sample_mag_sq + __FLT_EPSILON__);
 
-      size_t led_num = NUM_LEDS * (i - min_bin) / (float) (max_bin - min_bin);
+      size_t led_num = NUM_LEDS * (i - MIN_BIN) / (float) (MAX_BIN - MIN_BIN);
 
-      if (sample_mag_db[i] > max_sample_mag_db_for_frame[led_num])
-        max_sample_mag_db_for_frame[led_num] = sample_mag_db[i];
+      if (sample_mag_db[i] > sample_mag_db[dominant_bin_for_frame[led_num]])
+        dominant_bin_for_frame[led_num] = i;
 
       highband_energy_factor[led_num] += sample_mag_sq * i;
     }
 
-    const float32_t max_hbef_diff_db = 50.0, max_sample_mag_db_overall = 40.0;
-    uint32_t* led_pulse_ptrs[NUM_LEDS] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2};
+    const float32_t max_hbef_diff_db = 50.0, max_sample_mag_db = 40;
+    volatile uint32_t* led_pulse_ptrs[NUM_LEDS] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2};
 
     for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
       float32_t hbef_diff = highband_energy_factor[led_num] - last_hbef[led_num];
@@ -166,18 +168,15 @@ int main(void) {
       if (hbef_diff_db < 20)
         hbef_diff_db = 0;
 
-      if (max_sample_mag_db_for_frame[led_num] < 0)
-        max_sample_mag_db_for_frame[led_num] = 0;
+      // if (max_sample_mag_db_for_frame[led_num] < 0)
+      //   max_sample_mag_db_for_frame[led_num] = 0;
 
       last_hbef[led_num] = highband_energy_factor[led_num];
 
-      // volatile static size_t sample_mag_db_used_cnt = 0, total_cnt = 0;
-
       float32_t hbef_pwm_ratio = hbef_diff_db / max_hbef_diff_db;
-      float32_t sample_db_pwm_ratio = max_sample_mag_db_for_frame[led_num] / max_sample_mag_db_overall;
+      float32_t sample_db_pwm_ratio = (sample_mag_db[dominant_bin_for_frame[led_num]] - MIN_DB) / (MAX_DB-MIN_DB);
       float32_t max_pwm_ratio = hbef_pwm_ratio > sample_db_pwm_ratio ? hbef_pwm_ratio : sample_db_pwm_ratio;
 
-      // update led pwm
       *(led_pulse_ptrs[led_num]) = (uint32_t) (max_pwm_ratio * htim3.Instance->ARR);
     }
 
@@ -247,17 +246,8 @@ static void MX_ADC1_Init(void)
 {
   __HAL_RCC_ADC1_CLK_ENABLE();
 
-  /* USER CODE BEGIN ADC1_Init 0 */
-
-  /* USER CODE END ADC1_Init 0 */
-
   ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE BEGIN ADC1_Init 1 */
-
-  /* USER CODE END ADC1_Init 1 */
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
