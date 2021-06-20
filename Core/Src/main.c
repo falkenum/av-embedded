@@ -5,13 +5,13 @@
 #define ADC_FIFO_CHUNK_SIZE 256
 #define ADC_FIFO_NUM_CHUNKS (WINDOW_SIZE/ADC_FIFO_CHUNK_SIZE)
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
-#define MAX_DB 60
+#define MAX_DB 50
 #define MIN_DB (-10)
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
 #define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
 #define MIN_FREQ 80
-#define MAX_FREQ 7000
+#define MAX_FREQ 8000
 #define NUM_LEDS 2
 #define MAX_BIN ((size_t) (MAX_FREQ / FFT_BIN_BANDWIDTH))
 #define MIN_BIN ((size_t) (MIN_FREQ / FFT_BIN_BANDWIDTH))
@@ -137,7 +137,7 @@ int main(void) {
     for (size_t i = 0; i < NUM_LEDS; i++) {
       dominant_bin_for_frame[i] = MIN_BIN;
       highband_energy_factor[i] = 0.0;
-      // last_hbef[i] = 0.0;
+      last_hbef[i] = 0.0;
     }
 
     for (uint32_t i = MIN_BIN; i < MAX_BIN; i++) {
@@ -155,7 +155,8 @@ int main(void) {
       highband_energy_factor[led_num] += sample_mag_sq * i;
     }
 
-    const float32_t max_hbef_diff_db = 50.0, max_sample_mag_db = 40;
+    const float32_t max_hbef_diff_db = 50.0;
+    // const float32_t max_sample_mag_db = 40.0;
     volatile uint32_t* led_pulse_ptrs[2] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2};
 
     for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
@@ -174,7 +175,10 @@ int main(void) {
       float32_t sample_db_pwm_ratio = (sample_mag_db[dominant_bin_for_frame[led_num]] - MIN_DB) / (MAX_DB-MIN_DB);
       float32_t max_pwm_ratio = hbef_pwm_ratio > sample_db_pwm_ratio ? hbef_pwm_ratio : sample_db_pwm_ratio;
 
-      *(led_pulse_ptrs[led_num]) = (uint32_t) ((1 - sample_db_pwm_ratio) * htim3.Instance->ARR);
+      if (sample_db_pwm_ratio > 1.0)
+        sample_db_pwm_ratio = 1.0;
+
+      *(led_pulse_ptrs[led_num]) = (uint32_t) ((1 - max_pwm_ratio) * htim3.Instance->ARR);
     }
 
     // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
