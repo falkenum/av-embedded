@@ -5,8 +5,10 @@
 #define ADC_FIFO_CHUNK_SIZE 256
 #define ADC_FIFO_NUM_CHUNKS (WINDOW_SIZE/ADC_FIFO_CHUNK_SIZE)
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
-#define MAX_DB 50
-#define MIN_DB (-10)
+#define MAX_SAMPLE_MAG_DB 50.0
+#define MIN_SAMPLE_MAG_DB (-10.0)
+#define MAX_HBEF_DIFF_DB 30.0
+#define MIN_HBEF_DIFF_DB 10.0
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
 #define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
@@ -76,8 +78,8 @@ int main(void) {
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
-  MX_USART2_UART_Init();
-  MX_I2C1_Init();
+  // MX_USART2_UART_Init();
+  // MX_I2C1_Init();
 
   __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
 
@@ -91,11 +93,13 @@ int main(void) {
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
 
   HAL_ADC_Start_DoubleBuffer_DMA(&hadc1, (uint32_t*) adc_fifo.data.chunks[0], (uint32_t*) adc_fifo.data.chunks[0], ADC_FIFO_CHUNK_SIZE);
 
   arm_rfft_fast_instance_f32 fft_struct;
   arm_rfft_fast_init_f32(&fft_struct, FFT_SIZE);
+  volatile uint32_t* led_pulse_ptrs[3] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2, &htim3.Instance->CCR3};
 
   while (1)
   {
@@ -114,7 +118,7 @@ int main(void) {
       fft_in[i] = ((float32_t) adc_fifo.data.samples[sample_idx] - 2048) / 4096;
 
       // applying window
-      fft_in[i] = (a0 - (1-a0)*arm_cos_f32(2*PI*i/FFT_SIZE)) * fft_in[i];
+      fft_in[i] = (a0 - (1-a0)*arm_cos_f32(2*PI*i/ADC_FIFO_NUM_SAMPLES)) * fft_in[i];
     }
 
     // zero padding
@@ -137,7 +141,7 @@ int main(void) {
     for (size_t i = 0; i < NUM_LEDS; i++) {
       dominant_bin_for_frame[i] = MIN_BIN;
       highband_energy_factor[i] = 0.0;
-      last_hbef[i] = 0.0;
+      // last_hbef[i] = 0.0;
     }
 
     for (uint32_t i = MIN_BIN; i < MAX_BIN; i++) {
@@ -155,29 +159,33 @@ int main(void) {
       highband_energy_factor[led_num] += sample_mag_sq * i;
     }
 
-    const float32_t max_hbef_diff_db = 50.0;
-    // const float32_t max_sample_mag_db = 40.0;
-    volatile uint32_t* led_pulse_ptrs[2] = {&htim3.Instance->CCR1, &htim3.Instance->CCR2};
 
     for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
       float32_t hbef_diff = highband_energy_factor[led_num] - last_hbef[led_num];
       float32_t hbef_diff_rect = hbef_diff > 0 ? hbef_diff : 0;
-      float32_t hbef_diff_db = 0;
-
-      hbef_diff_db = 10*log10f((float) hbef_diff_rect + __FLT_EPSILON__);
-
-      if (hbef_diff_db < 20)
-        hbef_diff_db = 0;
-
+      float32_t hbef_diff_db = 10*log10f((float) hbef_diff_rect + __FLT_EPSILON__);
       last_hbef[led_num] = highband_energy_factor[led_num];
 
-      float32_t hbef_pwm_ratio = hbef_diff_db / max_hbef_diff_db;
-      float32_t sample_db_pwm_ratio = (sample_mag_db[dominant_bin_for_frame[led_num]] - MIN_DB) / (MAX_DB-MIN_DB);
-      float32_t max_pwm_ratio = hbef_pwm_ratio > sample_db_pwm_ratio ? hbef_pwm_ratio : sample_db_pwm_ratio;
+      float32_t curr_sample_mag_db = sample_mag_db[dominant_bin_for_frame[led_num]];
 
-      if (sample_db_pwm_ratio > 1.0)
-        sample_db_pwm_ratio = 1.0;
+      float32_t hbef_pwm_ratio;
+      if (hbef_diff_db > MAX_HBEF_DIFF_DB)
+        hbef_pwm_ratio = 1.0;
+      else if (hbef_diff_db < MIN_HBEF_DIFF_DB)
+        hbef_pwm_ratio = 0.0;
+      else
+        hbef_pwm_ratio = hbef_diff_db / MAX_HBEF_DIFF_DB;
 
+      float32_t sample_pwm_ratio;
+      if (curr_sample_mag_db > MAX_SAMPLE_MAG_DB)
+        sample_pwm_ratio = 1.0;
+      else if (curr_sample_mag_db < MIN_SAMPLE_MAG_DB)
+        sample_pwm_ratio = 0.0;
+      else
+        // need to do this because min db is negative
+        sample_pwm_ratio = (curr_sample_mag_db - MIN_SAMPLE_MAG_DB) / (MAX_SAMPLE_MAG_DB-MIN_SAMPLE_MAG_DB);
+
+      float32_t max_pwm_ratio = hbef_pwm_ratio > sample_pwm_ratio ? hbef_pwm_ratio : sample_pwm_ratio;
       *(led_pulse_ptrs[led_num]) = (uint32_t) ((1 - max_pwm_ratio) * htim3.Instance->ARR);
     }
 
@@ -366,13 +374,13 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 1000;
+  sConfigOC.Pulse = 2000;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  // if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  // {
-  //   Error_Handler();
-  // }
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
   // sConfigOC.Pulse = 600;
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
@@ -489,7 +497,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
