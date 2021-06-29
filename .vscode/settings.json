@@ -1,4 +1,9 @@
 {
     "makefile.extensionOutputFolder": "./.vscode",
-    "C_Cpp.default.compilerArgs": ["-Wall"]
+    "C_Cpp.default.compilerArgs": [
+        "-Wall"
+    ],
+    "files.associations": {
+        "main.h": "c"
+    }
 }

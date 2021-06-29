@@ -30,6 +30,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f4xx_hal.h"
 #include "arm_math.h"
+#include <string.h>
 // #include "ssd1306.h"
 
 /* Private includes ----------------------------------------------------------*/
