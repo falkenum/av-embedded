@@ -7,17 +7,19 @@
 #define ADC_FIFO_NUM_SAMPLES (ADC_FIFO_NUM_CHUNKS*ADC_FIFO_CHUNK_SIZE)
 #define MAX_SAMPLE_MAG_DB 50.0
 #define MIN_SAMPLE_MAG_DB (-10.0)
-#define MAX_HBEF_DIFF_DB 30.0
-#define MIN_HBEF_DIFF_DB 10.0
+#define MAX_HBEF_DIFF_DB 40.0
+#define MIN_HBEF_DIFF_DB 25.0
+#define HBEF_SCALE 0.5
 #define SAMPLING_RATE 45000
 #define TIM_CLK_FREQ 90000000
 #define FFT_BIN_BANDWIDTH ((float32_t) SAMPLING_RATE / FFT_SIZE)
 #define MIN_FREQ 80
 #define MAX_FREQ 8000
-#define NUM_LEDS 1
+#define NUM_LEDS 2
 #define MAX_BIN ((size_t) (MAX_FREQ / FFT_BIN_BANDWIDTH))
-// TODO
-#define MIN_BIN 3
+// +1 because don't want the dc component
+#define MIN_BIN ((size_t) (MIN_FREQ / FFT_BIN_BANDWIDTH + 1))
+#define MIN_HBEF_BIN (MIN_BIN + (MAX_BIN-MIN_BIN)/2)
 
 #define I2C_ADDR 0x7E
 #define I2C_TIMEOUT 100
@@ -122,10 +124,10 @@ int main(void) {
     Error_Handler();
   };  
 
-  uint8_t pwm = 0xFF;
-  const uint8_t num_channels = 6;
-  uint8_t channel_idx = 0;
-  uint8_t base_addr = 0x0a;
+  // uint8_t pwm = 0xFF;
+  // const uint8_t num_channels = 6;
+  // uint8_t channel_idx = 0;
+  const uint8_t base_addr = 0x0a;
 
   // irefall
   i2c_write(0x40, 0x10);
@@ -137,21 +139,6 @@ int main(void) {
   {
 
     
-    // HAL_StatusTypeDef status = HAL_UART_Receive(&huart2, uart_buf, sizeof(uart_buf), 1000);
-    
-    // if (status == HAL_TIMEOUT) {
-    // } else if (status != HAL_OK) {
-    //   Error_Handler();
-    // } else {
-    //   if (HAL_OK != HAL_UART_Transmit(&huart2, uart_buf, strlen(uart_buf), 1000)) {
-    //     Error_Handler();
-    //   }
-    // }
-    // pwmall
-    // i2c_write(base_addr + channel_idx, pwm);
-    // HAL_Delay(300);
-    // i2c_write(base_addr + channel_idx, 0);
-    // channel_idx = (channel_idx + 1) % num_channels;
 
     static size_t last_head_chunk = 0;
 
@@ -205,10 +192,24 @@ int main(void) {
       if (sample_mag_db[i] > sample_mag_db[dominant_bin_for_frame[led_num]])
         dominant_bin_for_frame[led_num] = i;
 
-      highband_energy_factor[led_num] += sample_mag_sq * i;
+      if (i > MIN_HBEF_BIN / 2)
+        sample_mag_sq *= i - NUM_LEDS / 2;
+
+      highband_energy_factor[led_num] += sample_mag_sq;
     }
 
 
+    static uint8_t color_idx = 0;
+    static float32_t max_hbef_pwm_ratio = 0.0;
+
+    if (max_hbef_pwm_ratio > 0.5) {
+      for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
+        i2c_write(color_idx + base_addr+3*led_num, 0);
+      }
+      color_idx = (color_idx + 1) % 3;
+    }
+    
+    max_hbef_pwm_ratio = 0.0;
     for (size_t led_num = 0; led_num < NUM_LEDS; led_num++) {
       float32_t hbef_diff = highband_energy_factor[led_num] - last_hbef[led_num];
       float32_t hbef_diff_rect = hbef_diff > 0 ? hbef_diff : 0;
@@ -224,6 +225,9 @@ int main(void) {
         hbef_pwm_ratio = 0.0;
       else
         hbef_pwm_ratio = hbef_diff_db / MAX_HBEF_DIFF_DB;
+      
+      if (hbef_pwm_ratio > max_hbef_pwm_ratio)
+        max_hbef_pwm_ratio = hbef_pwm_ratio;
 
       float32_t sample_pwm_ratio;
       if (curr_sample_mag_db > MAX_SAMPLE_MAG_DB)
@@ -234,9 +238,15 @@ int main(void) {
         // need to do this because min db is negative
         sample_pwm_ratio = (curr_sample_mag_db - MIN_SAMPLE_MAG_DB) / (MAX_SAMPLE_MAG_DB-MIN_SAMPLE_MAG_DB);
 
-      float32_t max_pwm_ratio = hbef_pwm_ratio > sample_pwm_ratio ? hbef_pwm_ratio : sample_pwm_ratio;
-      // *(led_pulse_ptrs[led_num]) = (uint32_t) ((1 - max_pwm_ratio) * htim3.Instance->ARR);
-      i2c_write(base_addr, max_pwm_ratio * UINT8_MAX);
+      float32_t max_pwm_ratio;
+      if (hbef_pwm_ratio > sample_pwm_ratio) {
+        max_pwm_ratio = hbef_pwm_ratio;
+      } else {
+        max_pwm_ratio = sample_pwm_ratio;
+      }
+
+      i2c_write(color_idx + base_addr+3*led_num, max_pwm_ratio * UINT8_MAX);
+
     }
 
 
